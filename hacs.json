@@ -1,0 +1,7 @@
+{
+  "name": "EFS – Carte des collectes de don du sang",
+  "filename": "efs-collectes-card.js",
+  "homeassistant": "2024.11.0",
+  "render_readme": true,
+  "country": ["FR"]
+}
