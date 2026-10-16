@@ -1,19 +1,29 @@
 /*
  * efs-collectes-card – carte Lovelace pour l’intégration efs_dondesang (dépôt HomeAssistant_DonduSang_Card).
- * Reprend les trois visuels : synthèse de la prochaine collecte, agenda, carte et remplissage.
+ * Trois vues (synthèse, agenda, carte + remplissage), entièrement paramétrables depuis l’éditeur visuel.
  *
  *   type: custom:efs-collectes-card
- *   vue: synthese | agenda | carte | complet   (défaut : complet)
- *   entity: sensor.efs_prochaine_collecte       (défaut)
- *   agenda_entity: sensor.efs_collectes_a_venir (défaut)
- *   max: 6                                      (lignes d'agenda)
- *   couleur: "#B42318"                          (accent)
+ *   entity: sensor.efs_caen_collectes_a_venir   # n'importe quelle entité de l'instance (défaut : 1re instance)
+ *   vue: synthese | agenda | carte | complet
+ *   titre: "Don du sang – Caen"
+ *   filtre: toutes | rdv_ouverts
+ *   jours: 30            distance_max: 5          max: 6
+ *   couleur: "#B42318"  (ou [180, 35, 24])
+ *   afficher_entete / afficher_adresse / afficher_boutons / afficher_pied /
+ *   afficher_plan / afficher_jauge / afficher_remplissage : true | false
  */
 (() => {
-  const VERSION = "1.0.0";
+  const VERSION = "1.1.0";
+  const DOMAIN = "efs_dondesang";
   const TZ_FALLBACK = "Europe/Paris";
   const DON = { sang: "Sang total", plasma: "Plasma", plaquettes: "Plaquettes" };
   const ST = { OUVERT: "Planning ouvert", NON: "Planning non ouvert", COMPLET: "Complet" };
+  const VUES = ["synthese", "agenda", "carte", "complet"];
+  const AFFICHAGES = [
+    "afficher_entete", "afficher_adresse", "afficher_boutons", "afficher_pied",
+    "afficher_plan", "afficher_jauge", "afficher_remplissage",
+  ];
+  const DEFAULTS = { vue: "complet", max: 6, filtre: "toutes", ...Object.fromEntries(AFFICHAGES.map((k) => [k, true])) };
 
   const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -30,7 +40,14 @@
   const pct = (v) => `${Math.round(v)} %`;
   const titre = (s) => String(s || "").toLowerCase()
     .replace(/(^|[\s\-'’(])([a-zà-ÿ])/g, (m, a, b) => a + b.toUpperCase());
+  const horaires = (h) => String(h || "").replace(/-/g, " – ").replace(/ \/ /g, " · ");
 
+  function couleur(c) {
+    if (Array.isArray(c) && c.length === 3 && c.every((n) => Number.isFinite(Number(n)))) {
+      return `rgb(${c.map((n) => Math.max(0, Math.min(255, Math.round(n)))).join(",")})`;
+    }
+    return typeof c === "string" && /^#[0-9a-f]{3,8}$/i.test(c) ? c : null;
+  }
   function statutDe(restantes) {
     if (restantes === null) return ST.NON;
     return restantes <= 0 ? ST.COMPLET : ST.OUVERT;
@@ -39,6 +56,33 @@
     if (statut === ST.COMPLET) return `<span class="chip full">Complet</span>`;
     if (statut === ST.NON) return `<span class="chip neutral">Planning non ouvert</span>`;
     return `<span class="chip ok">Planning ouvert</span>`;
+  }
+
+  /** Entités d'une instance de l'intégration, retrouvées par l'appareil commun. */
+  function resolveInstance(hass, cfg) {
+    const reg = hass.entities || {};
+    const states = hass.states || {};
+    const efs = Object.values(reg).filter((e) => e.platform === DOMAIN);
+    const isAgenda = (id) => Array.isArray(states[id]?.attributes?.collectes);
+    const isNext = (id) => states[id]?.attributes?.type_don !== undefined && !isAgenda(id);
+
+    let device = cfg.entity ? reg[cfg.entity]?.device_id : undefined;
+    if (!device && !cfg.entity) {
+      device = efs.find((e) => e.translation_key === "collectes_a_venir")?.device_id;
+    }
+    const sibling = (tk) => efs.find((e) => e.device_id === device && e.translation_key === tk)?.entity_id;
+
+    let agenda = cfg.agenda_entity || (device && sibling("collectes_a_venir"));
+    let next = device && sibling("prochaine_collecte");
+    if (cfg.entity && !agenda && isAgenda(cfg.entity)) agenda = cfg.entity;
+    if (cfg.entity && !next && isNext(cfg.entity)) next = cfg.entity;
+    // Repli sans registre (anciennes versions du frontend) : recherche par attributs,
+    // uniquement si aucune entité n'a été désignée (une entité inconnue est signalée).
+    if (!agenda && !cfg.entity) {
+      agenda = Object.keys(states).find((id) => id.startsWith("sensor.") && isAgenda(id) && states[id].attributes.centre !== undefined);
+    }
+    if (!next && !cfg.entity) next = "sensor.efs_prochaine_collecte";
+    return { agenda, next };
   }
 
   const ICON_DROP = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.7c3.6 4.6 6 8 6 11.3a6 6 0 0 1-12 0c0-3.3 2.4-6.7 6-11.3z"/></svg>`;
@@ -50,7 +94,9 @@
       --efs-line:var(--divider-color,rgba(0,0,0,.12));--efs-soft:var(--secondary-background-color,#F6F7F9);
       --efs-chip:rgba(127,127,127,.16);--efs-map:rgba(127,140,133,.16);--efs-grid:rgba(127,140,133,.28)}
     ha-card.dark{--efs-accent-text:#FF8A78;--efs-ok:#5FD3A6;--efs-ok-soft:rgba(95,211,166,.16);--efs-accent-soft:rgba(240,100,79,.18)}
+    ha-card.custom{--efs-accent-text:var(--efs-accent)}
     ha-card{padding:16px;color:var(--efs-text);display:flex;flex-direction:column;gap:20px}
+    .titre{font-size:20px;font-weight:700;margin:0}
     .bloc{display:flex;flex-direction:column;gap:16px}
     .bloc+.bloc{border-top:1px solid var(--efs-line);padding-top:20px}
     .row{display:flex;align-items:center;justify-content:space-between;gap:12px}
@@ -114,20 +160,19 @@
   `;
 
   class EfsCollectesCard extends HTMLElement {
-    static getStubConfig() {
-      return { vue: "complet", entity: "sensor.efs_prochaine_collecte", agenda_entity: "sensor.efs_collectes_a_venir" };
+    static getConfigElement() {
+      return document.createElement("efs-collectes-card-editor");
+    }
+
+    static getStubConfig(hass) {
+      const { agenda } = resolveInstance(hass || { states: {} }, {});
+      return { vue: "complet", ...(agenda ? { entity: agenda } : {}) };
     }
 
     setConfig(config) {
-      const vues = ["synthese", "agenda", "carte", "complet"];
-      if (config.vue && !vues.includes(config.vue)) throw new Error(`vue doit valoir : ${vues.join(", ")}`);
-      this._config = {
-        vue: "complet",
-        entity: "sensor.efs_prochaine_collecte",
-        agenda_entity: "sensor.efs_collectes_a_venir",
-        max: 6,
-        ...config,
-      };
+      if (config.vue && !VUES.includes(config.vue)) throw new Error(`vue doit valoir : ${VUES.join(", ")}`);
+      this._config = { ...DEFAULTS, ...config };
+      this._ids = null;
       if (!this.shadowRoot) this.attachShadow({ mode: "open" });
       this._sig = null;
       if (this._hass) this._render();
@@ -135,8 +180,12 @@
 
     set hass(hass) {
       this._hass = hass;
-      const a = hass.states[this._config?.entity];
-      const b = hass.states[this._config?.agenda_entity];
+      if (!this._ids || this._entsRef !== hass.entities) {
+        this._ids = resolveInstance(hass, this._config || {});
+        this._entsRef = hass.entities;
+      }
+      const a = hass.states[this._ids.next];
+      const b = hass.states[this._ids.agenda];
       const sig = `${a?.last_updated}|${b?.last_updated}|${new Date().getDate()}|${hass.themes?.darkMode}`;
       if (sig !== this._sig) {
         this._sig = sig;
@@ -155,28 +204,33 @@
     // ------------------------------------------------------------- données
     _data() {
       const hass = this._hass;
+      const cfg = this._config;
       const tz = hass.config?.time_zone || TZ_FALLBACK;
-      const next = hass.states[this._config.entity];
-      const ag = hass.states[this._config.agenda_entity];
+      const next = hass.states[this._ids.next];
+      const ag = hass.states[this._ids.agenda];
       const A = next?.attributes || {};
       const G = ag?.attributes || {};
-      const list = (G.collectes || []).map((c) => ({
-        ...c,
-        debutDate: new Date(c.debut),
-        places_restantes: num(c.places_restantes),
-        places_totales: num(c.places_totales),
-        taux: num(c.taux_remplissage),
-        statut: c.statut || statutDe(num(c.places_restantes)),
-      }));
-      const debut = next && !["unknown", "unavailable"].includes(next.state) ? new Date(next.state) : null;
-      return {
-        tz, next, ag, A, G, list, debut,
-        restantes: num(A.places_restantes),
-        totales: num(A.places_totales),
-        reservees: num(A.places_reservees),
-        taux: num(A.taux_remplissage),
-        nb: num(ag?.state),
-      };
+      const now = Date.now();
+      const toutes = (G.collectes || []).map((c) => {
+        const restantes = num(c.places_restantes);
+        return {
+          ...c,
+          debutDate: new Date(c.debut),
+          places_restantes: restantes,
+          places_totales: num(c.places_totales),
+          places_reservees: num(c.places_reservees),
+          distance: num(c.distance),
+          taux: num(c.taux_remplissage),
+          statut: c.statut || statutDe(restantes),
+        };
+      });
+      const jours = num(cfg.jours);
+      const dmax = num(cfg.distance_max);
+      const list = toutes.filter((c) =>
+        (cfg.filtre !== "rdv_ouverts" || c.statut === ST.OUVERT)
+        && (!jours || c.debutDate - now <= jours * 864e5)
+        && (!dmax || c.distance === null || c.distance <= dmax));
+      return { tz, next, ag, A, G, list, toutes, filtre_actif: list.length !== toutes.length, rayon: dmax || num(G.rayon_km) || 10 };
     }
 
     _fmt(tz) {
@@ -198,91 +252,128 @@
       return n <= 0 ? "aujourd’hui" : n === 1 ? "demain" : `dans ${n} jours`;
     }
 
+    _vide(d) {
+      const c = this._config;
+      if (d.filtre_actif) return "Aucune collecte ne correspond aux filtres de la carte.";
+      return `Aucune collecte dans les ${esc(c.jours || d.G.horizon_jours || "")} prochains jours à moins de ${esc(d.rayon)} km.`;
+    }
+
     // -------------------------------------------------------------- rendu
     _render() {
       if (!this._config || !this._hass || !this.shadowRoot) return;
+      const cfg = this._config;
       const d = this._data();
       let body;
-      if (!d.next || !d.ag) {
-        body = `<div class="empty">Entités introuvables : ${esc(this._config.entity)} / ${esc(this._config.agenda_entity)}.<br>Vérifiez que l’intégration EFS est installée.</div>`;
+      if (!d.ag) {
+        body = `<div class="empty">Aucune instance de l’intégration EFS trouvée${cfg.entity ? ` pour ${esc(cfg.entity)}` : ""}.<br>Vérifiez que l’intégration est installée, puis choisissez l’instance dans l’éditeur de la carte.</div>`;
       } else {
         const f = this._fmt(d.tz);
         const parts = [];
-        const v = this._config.vue;
+        const v = cfg.vue;
         if (v === "synthese" || v === "complet") parts.push(this._synthese(d, f));
         if (v === "agenda" || v === "complet") parts.push(this._agenda(d, f));
-        if (v === "carte" || v === "complet") parts.push(this._carte(d, f));
+        if (v === "carte" || v === "complet") {
+          const carte = this._carte(d, f);
+          if (carte) parts.push(carte);
+        }
         body = parts.map((p) => `<section class="bloc">${p}</section>`).join("");
       }
-      const accent = /^#[0-9a-f]{3,8}$/i.test(this._config.couleur || "") ? `--efs-accent:${this._config.couleur};` : "";
-      const dark = this._hass.themes?.darkMode ? "dark" : "";
-      this.shadowRoot.innerHTML = `<style>${STYLE}</style><ha-card class="${dark}" style="${accent}">${body}</ha-card>`;
+      const head = cfg.titre ? `<h2 class="titre">${esc(cfg.titre)}</h2>` : "";
+      const accent = couleur(cfg.couleur);
+      const classes = [this._hass.themes?.darkMode ? "dark" : "", accent ? "custom" : ""].join(" ").trim();
+      const style = accent ? `--efs-accent:${accent};--efs-accent-soft:color-mix(in srgb, ${accent} 16%, transparent);` : "";
+      this.shadowRoot.innerHTML = `<style>${STYLE}</style><ha-card class="${classes}" style="${style}">${head}${body}</ha-card>`;
     }
 
     _synthese(d, f) {
+      const cfg = this._config;
       const A = d.A;
       const don = DON[A.type_don] || DON[d.G.type_don] || "Don du sang";
-      if (!d.debut) {
-        return `<div class="row"><div class="row left"><div class="icon">${ICON_DROP}</div><span class="h">Don du sang</span></div><span class="chip neutral">${esc(don)}</span></div>
-          <div class="empty">Aucune collecte dans les ${esc(d.G.horizon_jours ?? "")} prochains jours à moins de ${esc(d.G.rayon_km ?? "")} km.</div>`;
-      }
-      const statut = A.statut || statutDe(d.restantes);
-      const lien = statut === ST.OUVERT ? safeUrl(A.lien_rdv) : null;
+      const entete = cfg.afficher_entete
+        ? `<div class="row"><div class="row left"><div class="icon">${ICON_DROP}</div><span class="h">Don du sang</span></div><span class="chip neutral">${esc(don)}</span></div>`
+        : "";
+      const now = Date.now();
+      const c = d.list.find((x) => {
+        const fin = x.fin ? new Date(x.fin) : new Date(x.debutDate.getTime() + 4 * 3600e3);
+        return fin > now;
+      }) || d.list[0];
+      if (!c) return `${entete}<div class="empty">${this._vide(d)}</div>`;
+
+      const lien = c.statut === ST.OUVERT ? safeUrl(c.lien_rdv) : null;
       const centre = d.G.centre;
-      const iti = centre && A.latitude
-        ? `https://www.openstreetmap.org/directions?route=${centre.latitude}%2C${centre.longitude}%3B${A.latitude}%2C${A.longitude}`
+      const iti = centre && c.latitude !== undefined
+        ? `https://www.openstreetmap.org/directions?route=${centre.latitude}%2C${centre.longitude}%3B${c.latitude}%2C${c.longitude}`
         : null;
-      const autres = Math.max(0, (d.nb ?? d.list.length) - 1);
+      const autres = Math.max(0, d.list.length - 1);
       const maj = A.derniere_mise_a_jour ? `Mis à jour à ${f.time.format(new Date(A.derniere_mise_a_jour))}` : "";
-      const places = d.restantes !== null
-        ? `<div class="row" style="align-items:baseline"><div><span class="big">${d.restantes}</span> <span class="muted">${d.totales ? `places restantes sur ${d.totales}` : "places restantes"}</span></div>${chip(statut)}</div>
-           ${d.taux !== null ? `<div class="bar main" role="img" aria-label="${pct(d.taux)} des places réservées"><span style="width:${Math.min(100, d.taux)}%"></span></div>
-           <div class="row muted small"><span>Taux de remplissage ${pct(d.taux)}</span>${d.reservees !== null ? `<span>${d.reservees} réservées</span>` : ""}</div>` : ""}`
-        : `<div class="row"><span class="muted">Les rendez-vous ne sont pas encore ouverts.</span>${chip(statut)}</div>`;
-      return `
-        <div class="row"><div class="row left"><div class="icon">${ICON_DROP}</div><span class="h">Don du sang</span></div><span class="chip neutral">${esc(don)}</span></div>
-        <div><div class="kicker">Prochaine collecte · ${this._days(d.debut, f)}</div>
-          <div class="date">${esc(f.long.format(d.debut).replace(/^./, (c) => c.toUpperCase()))}</div>
-          <div class="muted">${esc(String(A.horaires || "").replace(/-/g, " – ").replace(/ \/ /g, " · "))}</div></div>
-        <div class="place">${ICON_PIN}<div><b>${esc([A.lieu, titre(A.commune)].filter(Boolean).join(" · "))}</b>
-          <div class="muted small">${esc([A.adresse, km(A.distance)].filter(Boolean).join(" · "))}</div></div></div>
-        <div>${places}</div>
-        <div class="btns">
-          ${lien ? `<a class="btn primary" href="${esc(lien)}" target="_blank" rel="noopener">Prendre rendez-vous</a>`
-                 : `<a class="btn secondary block" href="https://dondesang.efs.sante.fr" target="_blank" rel="noopener">Site de l’EFS</a>`}
-          ${iti ? `<a class="btn secondary" href="${esc(iti)}" target="_blank" rel="noopener">Itinéraire</a>` : ""}
-        </div>
-        <div class="row muted xs foot"><span>${esc(maj)}${A.api_disponible === false ? " · API indisponible, données conservées" : ""}</span>
-          <span>${autres ? `${autres} autre${autres > 1 ? "s" : ""} collecte${autres > 1 ? "s" : ""} dans ${esc(d.G.rayon_km ?? "")} km` : ""}</span></div>`;
+      const places = c.places_restantes !== null
+        ? `<div class="row" style="align-items:baseline"><div><span class="big">${c.places_restantes}</span> <span class="muted">${c.places_totales ? `places restantes sur ${c.places_totales}` : "places restantes"}</span></div>${chip(c.statut)}</div>
+           ${c.taux !== null ? `<div class="bar main" role="img" aria-label="${pct(c.taux)} des places réservées"><span style="width:${Math.min(100, c.taux)}%"></span></div>
+           <div class="row muted small"><span>Taux de remplissage ${pct(c.taux)}</span>${c.places_reservees !== null ? `<span>${c.places_reservees} réservées</span>` : ""}</div>` : ""}`
+        : `<div class="row"><span class="muted">Les rendez-vous ne sont pas encore ouverts.</span>${chip(c.statut)}</div>`;
+      const adresse = cfg.afficher_adresse
+        ? `<div class="place">${ICON_PIN}<div><b>${esc([c.lieu, titre(c.commune)].filter(Boolean).join(" · "))}</b>
+            <div class="muted small">${esc([c.adresse, km(c.distance)].filter(Boolean).join(" · "))}</div></div></div>`
+        : "";
+      const boutons = cfg.afficher_boutons
+        ? `<div class="btns">
+            ${lien ? `<a class="btn primary" href="${esc(lien)}" target="_blank" rel="noopener">Prendre rendez-vous</a>`
+                   : `<a class="btn secondary block" href="https://dondesang.efs.sante.fr" target="_blank" rel="noopener">Site de l’EFS</a>`}
+            ${iti ? `<a class="btn secondary" href="${esc(iti)}" target="_blank" rel="noopener">Itinéraire</a>` : ""}
+          </div>`
+        : "";
+      const pied = cfg.afficher_pied && (maj || autres || A.api_disponible === false)
+        ? `<div class="row muted xs foot"><span>${esc(maj)}${A.api_disponible === false ? " · API indisponible, données conservées" : ""}</span>
+            <span>${autres ? `${autres} autre${autres > 1 ? "s" : ""} collecte${autres > 1 ? "s" : ""} dans ${esc(d.rayon)} km` : ""}</span></div>`
+        : "";
+      return `${entete}
+        <div><div class="kicker">${d.filtre_actif ? "Prochaine collecte retenue" : "Prochaine collecte"} · ${this._days(c.debutDate, f)}</div>
+          <div class="date">${esc(f.long.format(c.debutDate).replace(/^./, (x) => x.toUpperCase()))}</div>
+          <div class="muted">${esc(horaires(c.horaires))}</div></div>
+        ${adresse}<div>${places}</div>${boutons}${pied}`;
     }
 
     _agenda(d, f) {
-      const max = Math.max(1, Number(this._config.max) || 6);
+      const cfg = this._config;
+      const max = Math.max(1, Number(cfg.max) || 6);
       const rows = d.list.slice(0, max);
       const head = `<div class="row" style="align-items:baseline"><span class="h">Collectes à venir</span>
-        <span class="muted small">${esc(d.nb ?? d.list.length)} · rayon ${esc(d.G.rayon_km ?? "")} km · ${esc(d.G.horizon_jours ?? "")} jours</span></div>`;
-      if (!rows.length) return head + `<div class="empty">Aucune collecte dans l’horizon configuré.</div>`;
+        <span class="muted small">${esc(d.list.length)} · ${esc(d.rayon)} km · ${esc(cfg.jours || d.G.horizon_jours || "")} jours</span></div>`;
+      if (!rows.length) return head + `<div class="empty">${this._vide(d)}</div>`;
       const items = rows.map((c) => {
         const lien = safeUrl(c.lien_rdv);
         let right;
         if (c.statut === ST.OUVERT) {
           right = `<span>${c.places_totales ? `${c.places_restantes} / ${c.places_totales}` : `${c.places_restantes} places`}</span>
             ${c.taux !== null ? `<div class="bar"><span style="width:${Math.min(100, c.taux)}%"></span></div>` : ""}
-            ${lien ? `<a href="${esc(lien)}" target="_blank" rel="noopener">Rendez-vous</a>` : ""}`;
+            ${lien && cfg.afficher_boutons ? `<a href="${esc(lien)}" target="_blank" rel="noopener">Rendez-vous</a>` : ""}`;
         } else right = chip(c.statut);
+        const sous = cfg.afficher_adresse ? [c.lieu, km(c.distance)] : [km(c.distance)];
         return `<li><div class="d"><small>${esc(f.wd.format(c.debutDate))}</small><strong>${esc(f.day.format(c.debutDate))}</strong><em>${esc(f.mon.format(c.debutDate))}</em></div>
-          <div class="who"><b>${esc(titre(c.commune || c.lieu))}</b><span>${esc([c.lieu, km(c.distance)].filter(Boolean).join(" · "))}</span>
-          <span>${esc(String(c.horaires || "").replace(/-/g, " – ").replace(/ \/ /g, " · "))}</span></div>
+          <div class="who"><b>${esc(titre(c.commune || c.lieu))}</b><span>${esc(sous.filter(Boolean).join(" · "))}</span>
+          <span>${esc(horaires(c.horaires))}</span></div>
           <div class="st">${right}</div></li>`;
       }).join("");
-      const plus = (d.nb ?? 0) > rows.length ? `<div class="muted xs">+ ${d.nb - rows.length} autres collectes (calendrier « Collectes »)</div>` : "";
+      const reste = d.list.length - rows.length;
+      const plus = cfg.afficher_pied && reste > 0 ? `<div class="muted xs">+ ${reste} autre${reste > 1 ? "s" : ""} collecte${reste > 1 ? "s" : ""} (calendrier « Collectes »)</div>` : "";
       return head + `<ul class="agenda">${items}</ul>` + plus;
     }
 
     _carte(d, f) {
+      const cfg = this._config;
+      const out = [];
+      if (cfg.afficher_plan) out.push(this._plan(d, f));
+      const duo = [];
+      if (cfg.afficher_jauge) duo.push(this._jauge(d, f));
+      if (cfg.afficher_remplissage) duo.push(this._remplissage(d, f));
+      if (duo.length) out.push(`<div class="duo">${duo.join("")}</div>`);
+      return out.join("");
+    }
+
+    _plan(d, f) {
       const centre = d.G.centre;
-      const R = Number(d.G.rayon_km) || 10;
-      if (!centre) return `<div class="warn">Carte indisponible : mettez l’intégration à jour (v1.1.0 ou plus).</div>`;
+      const R = d.rayon;
+      if (!centre) return `<div class="warn">Plan indisponible : mettez l’intégration à jour (v1.1.0 ou plus).</div>`;
       const W = 512, H = 440, CX = 256, CY = 220, RPX = 190, s = RPX / R;
       const cos = Math.cos((centre.latitude * Math.PI) / 180);
       const P = (lat, lon) => [CX + (lon - centre.longitude) * 111 * cos * s, CY - (lat - centre.latitude) * 111 * s];
@@ -298,7 +389,6 @@
         if (!lieux.has(k)) lieux.set(k, c);
       }
       const first = d.list[0];
-      // Les pastilles occupent aussi de la place : les étiquettes les évitent.
       const placed = [[CX - 12, CX + 12, CY - 12, CY + 12]];
       for (const c of lieux.values()) {
         const [x, y] = P(c.latitude, c.longitude);
@@ -326,50 +416,187 @@
           <circle class="${cls}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${isNext ? 11 : 8}" ${isNext ? 'stroke-width="3"' : ""}/>
           <text class="map-label" x="${(right ? x + 14 : x - 14).toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="${right ? "start" : "end"}">${esc(label)}</text></a>`;
       }
-      const map = `<svg class="map" viewBox="0 0 ${W} ${H}" role="img" aria-label="Carte des collectes dans un rayon de ${R} km">
+      const dot = (cls) => `<svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="4.5" class="${cls}"/></svg>`;
+      return `<div class="row" style="align-items:baseline"><span class="h">Collectes dans un rayon de ${esc(R)} km</span><span class="muted small">${lieux.size} lieu${lieux.size > 1 ? "x" : ""}</span></div>
+        <svg class="map" viewBox="0 0 ${W} ${H}" role="img" aria-label="Carte des collectes dans un rayon de ${R} km autour de ${esc(centre.libelle || "")}">
         <rect class="map-bg" x="0" y="0" width="${W}" height="${H}"/>${grid}
         <circle class="map-circle" cx="${CX}" cy="${CY}" r="${RPX}"/>
         <text class="map-small" x="${CX}" y="${CY - RPX - 8}" text-anchor="middle">${R} km</text>
         <text class="map-small" x="10" y="${H - 10}">Quadrillage : ${step} km</text>
         <circle class="map-home" cx="${CX}" cy="${CY}" r="9"/><path class="map-roof" d="M${CX - 5} ${CY + 2} L${CX} ${CY - 4} L${CX + 5} ${CY + 2} V${CY + 6} H${CX - 5} Z"/>
-        ${marks}</svg>`;
-      const dot = (cls) => `<svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="4.5" class="${cls}"/></svg>`;
+        ${marks}</svg>
+        <div class="legend"><span>${dot("mk-open")}Planning ouvert</span><span>${dot("mk-closed")}Non ouvert</span><span>${dot("mk-full")}Complet</span></div>`;
+    }
 
+    _jauge(d, f) {
       const cible = d.list.find((c) => c.taux !== null);
-      let gauge = `<div><span class="h">Remplissage</span><div class="empty">Aucune collecte au planning ouvert.</div></div>`;
-      if (cible) {
-        const p = Math.max(0, Math.min(100, cible.taux)) / 100;
-        const a = Math.PI - p * Math.PI;
-        const gx = (100 + 80 * Math.cos(a)).toFixed(1), gy = (100 - 80 * Math.sin(a)).toFixed(1);
-        gauge = `<div><span class="h">Remplissage · ${esc(titre(cible.commune || cible.lieu))}</span>
-          <div class="muted small">${esc(f.long.format(cible.debutDate))} · prochaine collecte aux rendez-vous ouverts</div>
-          <svg class="gauge" viewBox="0 0 200 116" role="img" aria-label="${pct(cible.taux)} des places réservées">
-            <path class="gauge-bg" d="M20 100 A80 80 0 0 1 180 100"/>${p > 0 ? `<path class="gauge-fg" d="M20 100 A80 80 0 0 1 ${gx} ${gy}"/>` : ""}
-            <text x="100" y="92" text-anchor="middle" font-size="30" class="g-strong">${pct(cible.taux)}</text>
-            <text x="100" y="112" text-anchor="middle" font-size="11" class="g-muted">${cible.places_totales ? `${cible.places_totales - cible.places_restantes} réservées / ${cible.places_totales}` : ""}</text></svg></div>`;
-      }
-      const remplies = d.list.filter((c) => c.taux !== null).slice(0, 6);
-      const fill = `<div><div class="row" style="align-items:baseline"><span class="h">Places réservées par collecte</span></div>
+      if (!cible) return `<div><span class="h">Remplissage</span><div class="empty">Aucune collecte au planning ouvert.</div></div>`;
+      const p = Math.max(0, Math.min(100, cible.taux)) / 100;
+      const a = Math.PI - p * Math.PI;
+      const gx = (100 + 80 * Math.cos(a)).toFixed(1), gy = (100 - 80 * Math.sin(a)).toFixed(1);
+      return `<div><span class="h">Remplissage · ${esc(titre(cible.commune || cible.lieu))}</span>
+        <div class="muted small">${esc(f.long.format(cible.debutDate))} · prochaine collecte aux rendez-vous ouverts</div>
+        <svg class="gauge" viewBox="0 0 200 116" role="img" aria-label="${pct(cible.taux)} des places réservées">
+          <path class="gauge-bg" d="M20 100 A80 80 0 0 1 180 100"/>${p > 0 ? `<path class="gauge-fg" d="M20 100 A80 80 0 0 1 ${gx} ${gy}"/>` : ""}
+          <text x="100" y="92" text-anchor="middle" font-size="30" class="g-strong">${pct(cible.taux)}</text>
+          <text x="100" y="112" text-anchor="middle" font-size="11" class="g-muted">${cible.places_totales ? `${cible.places_totales - cible.places_restantes} réservées / ${cible.places_totales}` : ""}</text></svg></div>`;
+    }
+
+    _remplissage(d, f) {
+      const remplies = d.list.filter((c) => c.taux !== null).slice(0, Math.max(1, Number(this._config.max) || 6));
+      return `<div><div class="row" style="align-items:baseline"><span class="h">Places réservées par collecte</span></div>
         ${remplies.length ? `<ul class="fill" style="margin-top:10px">${remplies.map((c) => `<li>
           <div class="row"><span>${esc(f.short.format(c.debutDate))} · ${esc(titre(c.commune || c.lieu))}</span><span class="muted">${c.places_totales ? `${c.places_restantes} / ${c.places_totales} libres` : pct(c.taux)}</span></div>
           <div class="bar"><span style="width:${Math.min(100, c.taux)}%"></span></div></li>`).join("")}</ul>`
           : `<div class="empty">Les compteurs apparaîtront à l’ouverture des plannings.</div>`}</div>`;
-
-      return `<div class="row" style="align-items:baseline"><span class="h">Collectes dans un rayon de ${esc(R)} km</span><span class="muted small">${lieux.size} lieu${lieux.size > 1 ? "x" : ""}</span></div>
-        ${map}
-        <div class="legend"><span>${dot("mk-open")}Planning ouvert</span><span>${dot("mk-closed")}Non ouvert</span><span>${dot("mk-full")}Complet</span></div>
-        <div class="duo">${gauge}${fill}</div>`;
     }
   }
 
+  // ---------------------------------------------------------------- éditeur
+  const LABELS = {
+    entity: "Instance (zone surveillée)",
+    vue: "Vue",
+    titre: "Titre de la carte (facultatif)",
+    filtre: "Collectes affichées",
+    jours: "Limiter aux prochains jours",
+    distance_max: "Limiter à une distance (km)",
+    max: "Nombre de lignes (agenda, remplissage)",
+    couleur: "Couleur d’accent",
+    afficher_entete: "En-tête « Don du sang »",
+    afficher_adresse: "Lieu et adresse",
+    afficher_boutons: "Boutons et liens de rendez-vous",
+    afficher_pied: "Pied de carte (mise à jour, compteurs)",
+    afficher_plan: "Plan des lieux",
+    afficher_jauge: "Jauge de remplissage",
+    afficher_remplissage: "Places réservées par collecte",
+  };
+  const HELPERS = {
+    entity: "N’importe quelle entité de l’instance ; vide = première instance trouvée.",
+    jours: "Vide = horizon de l’intégration.",
+    distance_max: "Vide = rayon de l’intégration ; ne peut pas l’élargir.",
+    max: "La liste reçue de l’intégration est plafonnée par son réglage « Nombre maximum de collectes listées ».",
+  };
+
+  function editorSchema(vue) {
+    const syn = vue === "synthese" || vue === "complet";
+    const ag = vue === "agenda" || vue === "complet";
+    const ca = vue === "carte" || vue === "complet";
+    const affichage = [
+      syn && { name: "afficher_entete", selector: { boolean: {} } },
+      (syn || ag) && { name: "afficher_adresse", selector: { boolean: {} } },
+      (syn || ag) && { name: "afficher_boutons", selector: { boolean: {} } },
+      (syn || ag) && { name: "afficher_pied", selector: { boolean: {} } },
+      ca && { name: "afficher_plan", selector: { boolean: {} } },
+      ca && { name: "afficher_jauge", selector: { boolean: {} } },
+      ca && { name: "afficher_remplissage", selector: { boolean: {} } },
+    ].filter(Boolean);
+    return [
+      { name: "entity", selector: { entity: { filter: [{ integration: DOMAIN, domain: "sensor" }] } } },
+      {
+        name: "vue", required: true,
+        selector: { select: { mode: "dropdown", options: [
+          { value: "complet", label: "Complète (les trois)" },
+          { value: "synthese", label: "Prochaine collecte" },
+          { value: "agenda", label: "Agenda des collectes" },
+          { value: "carte", label: "Plan et remplissage" },
+        ] } },
+      },
+      { name: "titre", selector: { text: {} } },
+      {
+        type: "expandable", name: "", title: "Filtres", icon: "mdi:filter-variant", flatten: true,
+        schema: [
+          { name: "filtre", selector: { select: { mode: "list", options: [
+            { value: "toutes", label: "Toutes les collectes" },
+            { value: "rdv_ouverts", label: "Seulement celles où l’on peut prendre rendez-vous" },
+          ] } } },
+          { type: "grid", name: "", schema: [
+            { name: "jours", selector: { number: { min: 1, max: 180, mode: "box", unit_of_measurement: "j" } } },
+            { name: "distance_max", selector: { number: { min: 1, max: 50, mode: "box", unit_of_measurement: "km" } } },
+          ] },
+          { name: "max", selector: { number: { min: 1, max: 30, mode: "slider" } } },
+        ],
+      },
+      {
+        type: "expandable", name: "", title: "Affichage", icon: "mdi:eye-outline", flatten: true,
+        schema: [
+          { type: "grid", name: "", schema: affichage },
+          { name: "couleur", selector: { color_rgb: {} } },
+        ],
+      },
+    ];
+  }
+
+  class EfsCollectesCardEditor extends HTMLElement {
+    setConfig(config) {
+      this._config = { ...config };
+      this._render();
+    }
+
+    set hass(hass) {
+      this._hass = hass;
+      if (this._form) this._form.hass = hass;
+    }
+
+    connectedCallback() {
+      this._ensureComponents().then(() => this._render());
+    }
+
+    async _ensureComponents() {
+      // ha-form est chargé à la demande par Home Assistant : on force son chargement.
+      if (customElements.get("ha-form") || !window.loadCardHelpers) return;
+      try {
+        const helpers = await window.loadCardHelpers();
+        const card = await helpers.createCardElement({ type: "entities", entities: [] });
+        await card.constructor.getConfigElement();
+      } catch (e) {
+        /* l'éditeur YAML reste disponible */
+      }
+    }
+
+    _render() {
+      if (!this._config) return;
+      if (!this._form) {
+        this._form = document.createElement("ha-form");
+        this._form.computeLabel = (s) => LABELS[s.name] ?? s.title ?? s.name;
+        this._form.computeHelper = (s) => HELPERS[s.name];
+        this._form.addEventListener("value-changed", (ev) => this._changed(ev.detail.value));
+        this.replaceChildren(this._form);
+      }
+      const data = { ...DEFAULTS, ...this._config };
+      if (typeof data.couleur === "string" && /^#[0-9a-f]{6}$/i.test(data.couleur)) {
+        data.couleur = [1, 3, 5].map((i) => parseInt(data.couleur.slice(i, i + 2), 16));
+      }
+      this._form.hass = this._hass;
+      this._form.data = data;
+      this._form.schema = editorSchema(data.vue);
+    }
+
+    _changed(value) {
+      const config = { type: this._config.type || "custom:efs-collectes-card" };
+      for (const [k, v] of Object.entries(value)) {
+        if (v === undefined || v === null || v === "") continue;
+        if (k !== "vue" && k in DEFAULTS && DEFAULTS[k] === v) continue; // n'écrit que ce qui diffère du défaut
+        config[k] = v;
+      }
+      config.vue = value.vue || "complet";
+      this._config = config;
+      this.dispatchEvent(new CustomEvent("config-changed", { detail: { config }, bubbles: true, composed: true }));
+      this._render();
+    }
+  }
+
+  if (!customElements.get("efs-collectes-card-editor")) {
+    customElements.define("efs-collectes-card-editor", EfsCollectesCardEditor);
+  }
   if (!customElements.get("efs-collectes-card")) {
     customElements.define("efs-collectes-card", EfsCollectesCard);
     window.customCards = window.customCards || [];
     window.customCards.push({
       type: "efs-collectes-card",
       name: "EFS – Collectes de don du sang",
-      description: "Prochaine collecte, agenda, carte et remplissage (intégration efs_dondesang).",
+      description: "Prochaine collecte, agenda, plan et remplissage, avec filtres et choix des éléments affichés.",
       preview: true,
+      documentationURL: "https://github.com/LoloPicolo/HomeAssistant_DonduSang_Card",
     });
     console.info(`%c EFS-COLLECTES-CARD %c v${VERSION} `, "background:#B42318;color:#fff", "");
   }
