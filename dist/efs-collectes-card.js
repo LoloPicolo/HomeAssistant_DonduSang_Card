@@ -5,6 +5,7 @@
  *   type: custom:efs-collectes-card
  *   entity: sensor.efs_caen_collectes_a_venir   # n'importe quelle entité de l'instance (défaut : 1re instance)
  *   vue: synthese | agenda | carte | complet
+ *   commune: CAEN        # synthèse : prochaine collecte dans cette commune (défaut : auto = la plus proche dans le temps)
  *   titre: "Don du sang – Caen"
  *   filtre: toutes | rdv_ouverts
  *   jours: 30            distance_max: 5          max: 6
@@ -13,7 +14,7 @@
  *   afficher_plan / afficher_jauge / afficher_remplissage : true | false
  */
 (() => {
-  const VERSION = "1.1.0";
+  const VERSION = "1.2.0";
   const DOMAIN = "efs_dondesang";
   const TZ_FALLBACK = "Europe/Paris";
   const DON = { sang: "Sang total", plasma: "Plasma", plaquettes: "Plaquettes" };
@@ -23,7 +24,8 @@
     "afficher_entete", "afficher_adresse", "afficher_boutons", "afficher_pied",
     "afficher_plan", "afficher_jauge", "afficher_remplissage",
   ];
-  const DEFAULTS = { vue: "complet", max: 6, filtre: "toutes", ...Object.fromEntries(AFFICHAGES.map((k) => [k, true])) };
+  const COMMUNE_AUTO = "auto";
+  const DEFAULTS = { vue: "complet", commune: COMMUNE_AUTO, max: 6, filtre: "toutes", ...Object.fromEntries(AFFICHAGES.map((k) => [k, true])) };
 
   const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -40,6 +42,9 @@
   const pct = (v) => `${Math.round(v)} %`;
   const titre = (s) => String(s || "").toLowerCase()
     .replace(/(^|[\s\-'’(])([a-zà-ÿ])/g, (m, a, b) => a + b.toUpperCase());
+  /** Clé de comparaison d'un nom de commune : « Bretteville-l’Orgueilleuse » = « BRETTEVILLE L ORGUEILLEUSE ». */
+  const cle = (s) => String(s || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   const horaires = (h) => String(h || "").replace(/-/g, " – ").replace(/ \/ /g, " · ");
 
   function couleur(c) {
@@ -293,11 +298,18 @@
         ? `<div class="row"><div class="row left"><div class="icon">${ICON_DROP}</div><span class="h">Don du sang</span></div><span class="chip neutral">${esc(don)}</span></div>`
         : "";
       const now = Date.now();
-      const c = d.list.find((x) => {
+      const aVenir = d.list.filter((x) => {
         const fin = x.fin ? new Date(x.fin) : new Date(x.debutDate.getTime() + 4 * 3600e3);
         return fin > now;
-      }) || d.list[0];
+      });
+      // Par défaut, la prochaine collecte du calendrier ; sinon la prochaine dans la commune choisie.
+      const voulue = cfg.commune && cfg.commune !== COMMUNE_AUTO ? cfg.commune : null;
+      const dansCommune = voulue ? aVenir.find((x) => cle(x.commune || x.lieu) === cle(voulue)) : null;
+      const c = dansCommune || aVenir[0] || d.list[0];
       if (!c) return `${entete}<div class="empty">${this._vide(d)}</div>`;
+      const remplacee = voulue && !dansCommune
+        ? `<div class="muted small">Aucune collecte à venir à ${esc(titre(voulue))} ${d.filtre_actif ? "qui corresponde aux filtres de la carte" : "dans la liste reçue"} : prochaine collecte affichée.</div>`
+        : "";
 
       const lien = c.statut === ST.OUVERT ? safeUrl(c.lien_rdv) : null;
       const centre = d.G.centre;
@@ -327,7 +339,8 @@
             <span>${autres ? `${autres} autre${autres > 1 ? "s" : ""} collecte${autres > 1 ? "s" : ""} dans ${esc(d.rayon)} km` : ""}</span></div>`
         : "";
       return `${entete}
-        <div><div class="kicker">${d.filtre_actif ? "Prochaine collecte retenue" : "Prochaine collecte"} · ${this._days(c.debutDate, f)}</div>
+        ${remplacee}
+        <div><div class="kicker">${dansCommune ? `Prochaine collecte à ${esc(titre(c.commune || c.lieu))}` : d.filtre_actif ? "Prochaine collecte retenue" : "Prochaine collecte"} · ${this._days(c.debutDate, f)}</div>
           <div class="date">${esc(f.long.format(c.debutDate).replace(/^./, (x) => x.toUpperCase()))}</div>
           <div class="muted">${esc(horaires(c.horaires))}</div></div>
         ${adresse}<div>${places}</div>${boutons}${pied}`;
@@ -456,6 +469,7 @@
   const LABELS = {
     entity: "Instance (zone surveillée)",
     vue: "Vue",
+    commune: "Collecte présentée (vue « prochaine collecte »)",
     titre: "Titre de la carte (facultatif)",
     filtre: "Collectes affichées",
     jours: "Limiter aux prochains jours",
@@ -472,12 +486,39 @@
   };
   const HELPERS = {
     entity: "N’importe quelle entité de l’instance ; vide = première instance trouvée.",
+    commune: "Choisissez une commune pour présenter sa prochaine collecte plutôt que la plus proche dans le temps. Vous pouvez aussi saisir un nom.",
     jours: "Vide = horizon de l’intégration.",
     distance_max: "Vide = rayon de l’intégration ; ne peut pas l’élargir.",
     max: "La liste reçue de l’intégration est plafonnée par son réglage « Nombre maximum de collectes listées ».",
   };
 
-  function editorSchema(vue) {
+  /** Communes des collectes à venir de l'instance, avec leurs dates, pour la liste de l'éditeur. */
+  function communesDe(hass, cfg) {
+    if (!hass) return [];
+    const { agenda } = resolveInstance(hass, cfg);
+    const list = hass.states?.[agenda]?.attributes?.collectes || [];
+    const fmt = new Intl.DateTimeFormat("fr-FR", { timeZone: hass.config?.time_zone || TZ_FALLBACK, day: "2-digit", month: "2-digit" });
+    const groupes = new Map();
+    for (const c of list) {
+      const nom = c.commune || c.lieu;
+      if (!nom) continue;
+      const k = cle(nom);
+      if (!groupes.has(k)) groupes.set(k, { value: nom, dates: [] });
+      const g = groupes.get(k);
+      if (c.debut) g.dates.push(fmt.format(new Date(c.debut)));
+    }
+    const options = [...groupes.values()].map((g) => ({
+      value: g.value,
+      label: `${titre(g.value)} · ${g.dates.slice(0, 4).join(", ")}${g.dates.length > 4 ? "…" : ""}`,
+    }));
+    const choisie = cfg.commune && cfg.commune !== COMMUNE_AUTO ? cfg.commune : null;
+    if (choisie && !groupes.has(cle(choisie))) {
+      options.push({ value: choisie, label: `${titre(choisie)} · aucune collecte à venir dans la liste` });
+    }
+    return [{ value: COMMUNE_AUTO, label: "Prochaine collecte (la plus proche dans le temps)" }, ...options];
+  }
+
+  function editorSchema(vue, communes) {
     const syn = vue === "synthese" || vue === "complet";
     const ag = vue === "agenda" || vue === "complet";
     const ca = vue === "carte" || vue === "complet";
@@ -501,6 +542,10 @@
           { value: "carte", label: "Plan et remplissage" },
         ] } },
       },
+      syn && {
+        name: "commune",
+        selector: { select: { mode: "dropdown", custom_value: true, options: communes } },
+      },
       { name: "titre", selector: { text: {} } },
       {
         type: "expandable", name: "", title: "Filtres", icon: "mdi:filter-variant", flatten: true,
@@ -523,7 +568,7 @@
           { name: "couleur", selector: { color_rgb: {} } },
         ],
       },
-    ];
+    ].filter(Boolean);
   }
 
   class EfsCollectesCardEditor extends HTMLElement {
@@ -534,7 +579,10 @@
 
     set hass(hass) {
       this._hass = hass;
-      if (this._form) this._form.hass = hass;
+      if (!this._form) return;
+      this._form.hass = hass;
+      const sig = JSON.stringify(communesDe(hass, this._config || {}));
+      if (sig !== this._communesSig) this._render();
     }
 
     connectedCallback() {
@@ -568,7 +616,9 @@
       }
       this._form.hass = this._hass;
       this._form.data = data;
-      this._form.schema = editorSchema(data.vue);
+      const communes = communesDe(this._hass, this._config);
+      this._communesSig = JSON.stringify(communes);
+      this._form.schema = editorSchema(data.vue, communes);
     }
 
     _changed(value) {

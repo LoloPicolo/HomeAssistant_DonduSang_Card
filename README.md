@@ -22,7 +22,7 @@ Carte Lovelace pour Home Assistant qui présente les collectes de l’Établisse
 ### Manuelle
 
 1. Copier `dist/efs-collectes-card.js` dans `/config/www/efs-collectes-card.js`.
-2. Paramètres → Tableaux de bord → ⋮ → **Ressources** → **Ajouter une ressource** : URL `/local/efs-collectes-card.js?v=1.1.0`, type **Module JavaScript**.
+2. Paramètres → Tableaux de bord → ⋮ → **Ressources** → **Ajouter une ressource** : URL `/local/efs-collectes-card.js?v=1.2.0`, type **Module JavaScript**.
 3. Recharger la page (et vider le cache de l’application mobile). À chaque mise à jour manuelle, incrémenter le `?v=` pour forcer le rechargement.
 
 ## Utilisation
@@ -33,6 +33,7 @@ Ajoutez la carte depuis le sélecteur (« EFS – Collectes de don du sang ») :
 |---|---|---|---|
 | Instance (zone surveillée) | `entity` | 1re instance trouvée | N’importe quelle entité de l’instance à afficher (ex. `sensor.efs_caen_collectes_a_venir`) |
 | Vue | `vue` | `complet` | `synthese`, `agenda`, `carte` ou `complet` (les trois) |
+| Collecte présentée | `commune` | `auto` | Vue synthèse : `auto` = prochaine collecte du calendrier ; un nom de commune (`CAEN`, `Bretteville-l’Orgueilleuse`…) = prochaine collecte dans cette commune. Liste proposée dans l’éditeur avec les dates ; casse, accents et tirets indifférents |
 | Titre de la carte | `titre` | aucun | Titre affiché en tête de carte |
 | Collectes affichées | `filtre` | `toutes` | `rdv_ouverts` : seulement les collectes où l’on peut prendre rendez-vous |
 | Limiter aux prochains jours | `jours` | horizon de l’intégration | Ne montre que les collectes des N prochains jours |
@@ -59,6 +60,16 @@ vue: synthese
 afficher_entete: false
 afficher_pied: false
 ```
+
+Présenter la collecte de Caen plutôt que la plus proche dans le temps :
+
+```yaml
+type: custom:efs-collectes-card
+vue: synthese
+commune: CAEN
+```
+
+Si la commune n’a plus de collecte à venir (ou si les filtres de la carte l’écartent), la carte affiche la prochaine collecte du calendrier et le signale. Seules les collectes reçues de l’intégration sont proposées : pour choisir une collecte lointaine, augmentez son réglage « Nombre maximum de collectes listées » (jusqu’à 30).
 
 Agenda des rendez-vous disponibles à moins de 5 km dans le mois :
 
