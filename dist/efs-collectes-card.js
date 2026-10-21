@@ -14,7 +14,7 @@
  *   afficher_plan / afficher_jauge / afficher_remplissage : true | false
  */
 (() => {
-  const VERSION = "1.2.0";
+  const VERSION = "1.2.1";
   const DOMAIN = "efs_dondesang";
   const TZ_FALLBACK = "Europe/Paris";
   const DON = { sang: "Sang total", plasma: "Plasma", plaquettes: "Plaquettes" };
@@ -646,7 +646,7 @@
       name: "EFS – Collectes de don du sang",
       description: "Prochaine collecte, agenda, plan et remplissage, avec filtres et choix des éléments affichés.",
       preview: true,
-      documentationURL: "https://github.com/LoloPicolo/HomeAssistant_DonduSang_Card",
+      documentationURL: "https://github.com/Laurent14760/HomeAssistant_DonduSang_Card",
     });
     console.info(`%c EFS-COLLECTES-CARD %c v${VERSION} `, "background:#B42318;color:#fff", "");
   }

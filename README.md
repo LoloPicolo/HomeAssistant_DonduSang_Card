@@ -1,6 +1,6 @@
 # EFS – Carte des collectes de don du sang
 
-Carte Lovelace pour Home Assistant qui présente les collectes de l’Établissement français du sang remontées par l’intégration [HomeAssistant_DonduSang](https://github.com/LoloPicolo/HomeAssistant_DonduSang) : prochaine collecte, agenda des semaines à venir, plan des lieux et remplissage des créneaux.
+Carte Lovelace pour Home Assistant qui présente les collectes de l’Établissement français du sang remontées par l’intégration [HomeAssistant_DonduSang](https://github.com/Laurent14760/HomeAssistant_DonduSang) : prochaine collecte, agenda des semaines à venir, plan des lieux et remplissage des créneaux.
 
 ![Aperçu – thème clair](images/apercu-clair.png)
 
@@ -14,7 +14,7 @@ Carte Lovelace pour Home Assistant qui présente les collectes de l’Établisse
 ### Via HACS (recommandé)
 
 1. HACS → ⋮ → **Dépôts personnalisés**.
-2. URL : `https://github.com/LoloPicolo/HomeAssistant_DonduSang_Card`, catégorie **Tableau de bord** (*Dashboard*), puis **Ajouter**.
+2. URL : `https://github.com/Laurent14760/HomeAssistant_DonduSang_Card`, catégorie **Tableau de bord** (*Dashboard*), puis **Ajouter**.
 3. Rechercher « EFS – Carte des collectes de don du sang » dans HACS, **Télécharger**.
 4. HACS déclare lui-même la ressource du tableau de bord. Rechargez la page du navigateur (Ctrl + Maj + R).
    Dans l’application mobile : Paramètres → Application compagnon → Dépannage (ou Débogage) → **Réinitialiser le cache du frontend**, puis fermez complètement l’application et rouvrez-la.
@@ -22,7 +22,7 @@ Carte Lovelace pour Home Assistant qui présente les collectes de l’Établisse
 ### Manuelle
 
 1. Copier `dist/efs-collectes-card.js` dans `/config/www/efs-collectes-card.js`.
-2. Paramètres → Tableaux de bord → ⋮ → **Ressources** → **Ajouter une ressource** : URL `/local/efs-collectes-card.js?v=1.2.0`, type **Module JavaScript**.
+2. Paramètres → Tableaux de bord → ⋮ → **Ressources** → **Ajouter une ressource** : URL `/local/efs-collectes-card.js?v=1.2.1`, type **Module JavaScript**.
 3. Recharger la page (et vider le cache de l’application mobile). À chaque mise à jour manuelle, incrémenter le `?v=` pour forcer le rechargement.
 
 ## Utilisation
